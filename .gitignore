@@ -1,0 +1,65 @@
+## .NET / Visual Studio
+
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ll]og/
+[Ll]ogs/
+artifacts/
+publish/
+*.nupkg
+*.snupkg
+
+# Visual Studio / Rider / VS Code
+.vs/
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.DotSettings.user
+_ReSharper*/
+
+# Test results / coverage
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coveragexml
+coverage*.json
+coverage*.xml
+
+# Temporary / OS files
+*.tmp
+*.log
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local databases
+*.mdf
+*.ldf
+*.db
+*.db-shm
+*.db-wal
+
+## Secrets and local configuration
+# docker compose reads .env (e.g. MSSQL_SA_PASSWORD)
+.env
+.env.*
+# Local overrides that may hold real connection strings
+appsettings.*.local.json
+appsettings.Local.json
+# Certificates / keys
+*.pfx
+*.pem
+*.key

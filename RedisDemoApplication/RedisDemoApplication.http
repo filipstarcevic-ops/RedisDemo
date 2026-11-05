@@ -1,0 +1,49 @@
+@RedisDemoApplication_HostAddress = http://localhost:5069
+
+### 1) First call: CACHE MISS -> DATABASE QUERY -> CACHE SET
+GET {{RedisDemoApplication_HostAddress}}/api/products/1
+Accept: application/json
+
+### 2) Same call again: CACHE HIT (no SQL is executed)
+GET {{RedisDemoApplication_HostAddress}}/api/products/1
+Accept: application/json
+
+### List (cache key products:all)
+GET {{RedisDemoApplication_HostAddress}}/api/products
+Accept: application/json
+
+### Not found -> 404 (nothing is cached)
+GET {{RedisDemoApplication_HostAddress}}/api/products/9999
+Accept: application/json
+
+### Create -> invalidates products:all
+POST {{RedisDemoApplication_HostAddress}}/api/products
+Content-Type: application/json
+
+{
+  "name": "USB-C Hub",
+  "description": "7-in-1 hub with HDMI and card reader.",
+  "price": 49.90
+}
+
+### Update -> invalidates product:1 and products:all
+PUT {{RedisDemoApplication_HostAddress}}/api/products/1
+Content-Type: application/json
+
+{
+  "name": "Mechanical Keyboard (v2)",
+  "description": "Tenkeyless keyboard with red switches.",
+  "price": 94.99
+}
+
+### Validation error -> 400
+POST {{RedisDemoApplication_HostAddress}}/api/products
+Content-Type: application/json
+
+{
+  "name": "",
+  "price": -1
+}
+
+### Delete -> invalidates product:4 and products:all
+DELETE {{RedisDemoApplication_HostAddress}}/api/products/4
