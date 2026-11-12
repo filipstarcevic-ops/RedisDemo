@@ -2,7 +2,7 @@
 
 An educational ASP.NET Core (.NET 10) Web API that shows how **Redis** is used as a **distributed cache** in front of **SQL Server**, using the **Cache-Aside** pattern, **TTL expiration** and **cache invalidation**.
 
-The application is built to run against local infrastructure today and against **Azure Managed Redis**, **Azure SQL Database** and **Azure App Service** later, with configuration changes only.
+The application runs against **Azure Managed Redis** and **Azure SQL Database** only. There is no local database or local Redis: connection strings always point to the Azure resources and come from user secrets (developer machine) or App Service settings (Azure).
 
 ---
 
@@ -15,9 +15,9 @@ The application is built to run against local infrastructure today and against *
 5. [How this application integrates Redis](#5-how-this-application-integrates-redis)
 6. [Cache expiration (TTL)](#6-cache-expiration-ttl)
 7. [Why cache invalidation is necessary](#7-why-cache-invalidation-is-necessary)
-8. [Running the application locally](#8-running-the-application-locally)
-9. [Running Redis with Docker Compose](#9-running-redis-with-docker-compose)
-10. [Configuring Azure Managed Redis and Azure SQL later](#10-configuring-azure-managed-redis-and-azure-sql-later)
+8. [Running the application](#8-running-the-application)
+9. [Inspecting Redis with Redis Insight](#9-inspecting-redis-with-redis-insight)
+10. [Deploying to Azure App Service](#10-deploying-to-azure-app-service)
 11. [API reference with examples](#11-api-reference-with-examples)
 12. [Demo script: CACHE MISS vs CACHE HIT](#12-demo-script-cache-miss-vs-cache-hit)
 13. [Tests](#13-tests)
@@ -172,12 +172,7 @@ TTL is a safety net, not the main consistency mechanism:
 * It keeps memory bounded — rarely-read products don't stay in Redis forever.
 * Shorter TTL → fresher data, more DB load. Longer TTL → fewer DB hits, more risk of staleness.
 
-You can watch the TTL count down in Redis:
-
-```bash
-docker exec -it redisdemo-redis redis-cli TTL "RedisDemo:product:1"
-# (integer) 287
-```
+You can watch the TTL count down in Redis Insight (key details of `RedisDemo:product:1`).
 
 ## 7. Why cache invalidation is necessary
 
@@ -199,123 +194,63 @@ Order matters: the database is written **first**, then the cache is invalidated.
 
 > Note: Cache-Aside still has a small race window (a read that started before an update can write an old value back after the invalidation). The TTL bounds how long that can last. For this demo that trade-off is acceptable and is the standard behaviour of Cache-Aside.
 
-## 8. Running the application locally
+## 8. Running the application
 
 ### Prerequisites
 
 * [.NET 10 SDK](https://dotnet.microsoft.com/download)
-* Docker Desktop (for Redis), **or** any reachable Redis instance
-* SQL Server: **LocalDB** (installed with Visual Studio) **or** the optional SQL Server container from `docker-compose.yml`
+* An **Azure SQL Database** with a firewall rule for your client IP and your Microsoft Entra account set as the server's Entra admin
+* An **Azure Managed Redis** instance with **Access Keys Authentication** enabled
+* Azure CLI or Visual Studio signed in with the same Entra account (used by `Authentication=Active Directory Default`)
+
+### Configuration
+
+`appsettings.json` and `appsettings.Development.json` contain **no connection strings**. The app fails fast at startup if either is missing. Set them with [user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets) (stored outside the repo):
+
+```bash
+dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Server=tcp:<server>.database.windows.net,1433;Initial Catalog=<db>;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;Authentication=\"Active Directory Default\";" --project RedisDemoApplication
+dotnet user-secrets set "ConnectionStrings:Redis" "<name>.<region>.redis.azure.net:10000,password=<access-key>,ssl=True,abortConnect=False" --project RedisDemoApplication
+```
+
+The Redis access key comes from the portal: **Redis resource → Settings → Authentication → Access keys**. If the Redis resource is recreated, it gets a new key and this secret must be updated.
 
 ### Steps
 
 ```bash
-# 1. Start Redis
-docker compose up -d
-
-# 2. Restore the local EF Core CLI tool (pinned in dotnet-tools.json)
+# 1. Restore the local EF Core CLI tool (pinned in dotnet-tools.json)
 dotnet tool restore
 
-# 3. Create / update the database (creates the Products table + 3 seed rows)
+# 2. Create / update the Azure SQL schema (Products table + 3 seed rows)
 dotnet ef database update --project RedisDemoApplication
 
-# 4. Run the API
+# 3. Run the API
 dotnet run --project RedisDemoApplication --launch-profile http
 ```
 
 * Swagger UI: <http://localhost:5069/swagger>
 * OpenAPI document: <http://localhost:5069/openapi/v1.json>
-* Ready-made requests: `RedisDemoApplication/RedisDemoApplication.http` (Visual Studio / VS Code REST Client / Rider)
-
-### Configuration
-
-`appsettings.json` (committed, no secrets):
-
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "",
-    "Redis": ""
-  },
-  "CacheSettings": {
-    "InstanceName": "RedisDemo:",
-    "ProductCacheExpirationMinutes": 5
-  }
-}
-```
-
-`appsettings.Development.json` points at LocalDB and local Redis (no credentials involved):
-
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Server=(localdb)\\MSSQLLocalDB;Database=RedisDemo;Trusted_Connection=True;TrustServerCertificate=True;MultipleActiveResultSets=true",
-    "Redis": "localhost:6379,abortConnect=false"
-  }
-}
-```
-
-The app fails fast at startup if either connection string is missing.
-
-To point Development at something else **without editing committed files**, use [user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets) or environment variables (`__` = section separator):
-
-```bash
-# user secrets (stored outside the repo)
-dotnet user-secrets init --project RedisDemoApplication
-dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Server=localhost,1433;Database=RedisDemo;User Id=sa;Password=<your-password>;TrustServerCertificate=True" --project RedisDemoApplication
-
-# or environment variables (PowerShell)
-$env:ConnectionStrings__Redis = "my-redis-host:6379"
-```
+* Ready-made requests: `RedisDemoApplication/RedisDemoApplication.http`
 
 ### Database migrations
-
-The initial migration lives in `RedisDemoApplication/Migrations`. Common commands (run from the solution folder):
 
 ```bash
 dotnet ef database update --project RedisDemoApplication                 # apply migrations
 dotnet ef migrations add <Name> --project RedisDemoApplication           # after changing the model
-dotnet ef migrations script --idempotent --project RedisDemoApplication  # SQL script, e.g. for Azure SQL
+dotnet ef migrations script --idempotent --project RedisDemoApplication  # SQL script for a pipeline
 ```
 
-## 9. Running Redis with Docker Compose
+## 9. Inspecting Redis with Redis Insight
 
-`docker-compose.yml` at the solution root:
+Connect [Redis Insight](https://redis.io/insight/) to the Azure instance: **Add Redis database**, host `<name>.<region>.redis.azure.net`, port `10000`, password = access key, and enable **Use TLS** on the Security tab.
 
-```bash
-docker compose up -d                 # Redis 7.4 on localhost:6379
-docker compose ps                    # health status
-docker compose logs -f redis
-docker compose down                  # stop (data volume kept)
-docker compose down -v               # stop and delete data
-```
+* **Browser**: filter `RedisDemo:*`; `RedisDemo:product:1` is a hash whose `data` field holds the cached JSON.
+* **TTL**: shown in the key details, counting down from 300 seconds.
+* **Profiler**: live stream of the commands the API sends (`HMGET`, `HSET`/`EXPIRE`, `DEL`).
+* **Workbench**: run commands manually, e.g. `TTL RedisDemo:product:1`.
 
-Optional SQL Server 2022 container (if you don't have LocalDB). The SA password is **never committed** — it must come from your shell or an uncommitted `.env` file (ignored by `.gitignore`):
+## 10. Deploying to Azure App Service
 
-```bash
-# .env  (not committed)
-MSSQL_SA_PASSWORD=<a-strong-password>
-```
-
-```bash
-docker compose --profile sql up -d
-```
-
-Then set `ConnectionStrings:DefaultConnection` to `Server=localhost,1433;Database=RedisDemo;User Id=sa;Password=<same-password>;TrustServerCertificate=True` via user secrets.
-
-Inspecting Redis while you demo:
-
-```bash
-docker exec -it redisdemo-redis redis-cli
-127.0.0.1:6379> KEYS RedisDemo:*
-127.0.0.1:6379> HGET RedisDemo:product:1 data
-127.0.0.1:6379> TTL RedisDemo:product:1
-127.0.0.1:6379> MONITOR        # live stream of every command the API sends
-```
-
-## 10. Configuring Azure Managed Redis and Azure SQL later
-
-No code changes are needed — only configuration. In Azure App Service, set these under **Settings → Environment variables** (connection strings or app settings), ideally as **Key Vault references** rather than plain values:
+No code changes are needed. In App Service, set these under **Settings → Environment variables**, ideally as **Key Vault references**:
 
 | Setting | Example value |
 |---|---|
@@ -334,12 +269,10 @@ flowchart LR
 
 Notes:
 
-* **Azure Managed Redis** listens on port **10000** with TLS required (`ssl=True`). Azure Cache for Redis (the older offering) uses `<name>.redis.cache.windows.net:6380`.
-* **Azure SQL with Managed Identity**: `Authentication=Active Directory Default` lets the App Service's managed identity sign in — no SQL password at all. Grant the identity a database user (`CREATE USER [<app-name>] FROM EXTERNAL PROVIDER`).
-* **Redis with Microsoft Entra ID** (no access keys) is possible too, but requires the `Microsoft.Azure.StackExchangeRedis` package and a small change to how the connection is configured — out of scope here.
-* `EnableRetryOnFailure()` is already enabled on the SQL Server provider to handle transient Azure SQL errors.
-* Apply migrations to Azure SQL from a pipeline using `dotnet ef migrations script --idempotent` or a migration bundle, rather than from the running app.
-* Never commit these values. `appsettings.json` intentionally ships with empty connection strings.
+* **Azure Managed Redis** listens on port **10000** with TLS required (`ssl=True`).
+* **Azure SQL with Managed Identity**: `Authentication=Active Directory Default` lets the App Service's managed identity sign in without a password. Grant the identity a database user (`CREATE USER [<app-name>] FROM EXTERNAL PROVIDER`).
+* `EnableRetryOnFailure()` is enabled on the SQL Server provider to handle transient Azure SQL errors.
+* Never commit connection strings or access keys.
 
 ## 11. API reference with examples
 
@@ -440,7 +373,7 @@ Content-Type: application/json
 
 ## 12. Demo script: CACHE MISS vs CACHE HIT
 
-With Redis running and the API started, open `RedisDemoApplication.http` (or use curl) and watch the API console.
+With the API started, open `RedisDemoApplication.http` (or use curl) and watch the API console.
 
 **1. First read — cache miss**
 
@@ -484,7 +417,7 @@ CACHE INVALIDATION - products:all removed from Redis
 
 **4. Read again — miss, fresh data reloaded**, then hits again until the next write or until the 5-minute TTL expires.
 
-Tip: run `docker exec -it redisdemo-redis redis-cli MONITOR` in another terminal to see the `HMGET`, `HSET`/`EXPIRE` and `DEL` commands arrive in real time.
+Tip: start the **Profiler** in Redis Insight to see the `HMGET`, `HSET`/`EXPIRE` and `DEL` commands arrive in real time.
 
 ## 13. Tests
 
@@ -494,7 +427,7 @@ dotnet test
 
 `RedisDemoApplication.Tests` (xUnit v3) runs the **real** `ProductService` and `ProductsController` against:
 
-* **SQLite in-memory** as a stand-in for SQL Server (via the production `AppDbContext`, including seed data), with an EF Core `DbCommandInterceptor` that **counts SQL commands** — this is how tests prove the database was or wasn't queried.
+* **SQLite in-memory** as a stand-in for Azure SQL (via the production `AppDbContext`, including seed data), with an EF Core `DbCommandInterceptor` that **counts SQL commands** — this is how tests prove the database was or wasn't queried.
 * **`MemoryDistributedCache`** — the framework's in-memory `IDistributedCache` — as a stand-in for Redis.
 
 No production code was changed for testability.
@@ -516,7 +449,6 @@ Covered behaviour:
 
 ```
 RedisDemoApplication/                     solution root
-├── docker-compose.yml                    Redis (+ optional SQL Server profile)
 ├── dotnet-tools.json                     pinned dotnet-ef tool
 ├── RedisDemoApplication.slnx
 ├── RedisDemoApplication/                 Web API
@@ -531,7 +463,7 @@ RedisDemoApplication/                     solution root
 │   ├── Services/ProductService.cs        Cache-Aside + invalidation + logging
 │   ├── Program.cs                        DI: EF Core, Redis, OpenAPI/Swagger UI
 │   ├── appsettings.json                  no secrets
-│   ├── appsettings.Development.json      LocalDB + localhost Redis
+│   ├── appsettings.Development.json      logging only (no connection strings)
 │   └── RedisDemoApplication.http         demo requests
 └── RedisDemoApplication.Tests/           xUnit v3 tests
 ```

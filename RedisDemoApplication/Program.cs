@@ -5,26 +5,27 @@ using RedisDemoApplication.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Connection strings come from configuration only (appsettings, user secrets or
-// environment variables such as ConnectionStrings__Redis). Nothing is hardcoded.
+// Connection strings point to Azure SQL Database and Azure Managed Redis and come from
+// configuration only: user secrets when running on a developer machine, App Service
+// environment variables / Key Vault references in Azure. Nothing is hardcoded.
 var sqlConnectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
 if (string.IsNullOrWhiteSpace(sqlConnectionString) || string.IsNullOrWhiteSpace(redisConnectionString))
 {
     throw new InvalidOperationException(
         "Connection strings 'DefaultConnection' and 'Redis' must be configured " +
-        "(appsettings.{Environment}.json, user secrets or environment variables).");
+        "(user secrets or environment variables) with the Azure SQL and Azure Redis values.");
 }
 
 var cacheSection = builder.Configuration.GetSection(CacheSettings.SectionName);
 builder.Services.Configure<CacheSettings>(cacheSection);
 
-// SQL Server: local SQL Server / LocalDB in development, Azure SQL Database in production.
+// Azure SQL Database (retry on transient errors).
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(sqlConnectionString, sql => sql.EnableRetryOnFailure()));
 
 // Redis registered behind the standard IDistributedCache abstraction.
-// Local Redis in development, Azure Managed Redis in production - only the connection string changes.
+// Azure Managed Redis (TLS, port 10000).
 builder.Services.AddStackExchangeRedisCache(options =>
 {
     options.Configuration = redisConnectionString;
